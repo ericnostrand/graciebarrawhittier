@@ -17,6 +17,7 @@ import {
   updateContact,
   addContactTags,
   addContactToWorkflow,
+  removeContactFromWorkflow,
   addContactNote,
   getContact,
   deleteOpportunity,
@@ -252,6 +253,43 @@ function formatTraineeLabel(firstName: string, age: number | undefined, isSelf: 
   return firstName;
 }
 
+/**
+ * Remove the contact from every active nurture-campaign workflow on the given
+ * funnel. Called after a successful booking — the contact's opp has just moved
+ * off the nurture stage, so any in-flight nurture sequence should stop.
+ *
+ * GHL workflows are contact-scoped, so this removes ALL of this contact's
+ * active enrollments in each listed workflow. For the rare multi-trainee-in-
+ * same-pipeline case this is an over-exit — accepted as a pragmatic trade-off
+ * (the alternative is a contact getting nurture messages AFTER they booked,
+ * which reads as unprofessional).
+ *
+ * Non-fatal: failures are logged and swallowed. The booking already succeeded;
+ * a stray nurture message is recoverable, a thrown error here is not.
+ */
+export async function exitNurtureWorkflows(
+  contactId: string,
+  funnel: 'trial' | 'credit' | 'btm',
+): Promise<void> {
+  let envKeys: string[];
+  if (funnel === 'trial') {
+    envKeys = ['WORKFLOW_ID_TRIAL_NURTURE', 'WORKFLOW_ID_NURTURE_CAMPAIGN', 'WORKFLOW_ID_REBOOKING_CAMPAIGN', 'WORKFLOW_ID_INACTIVE_REACTIVATION'];
+  } else if (funnel === 'credit') {
+    envKeys = ['WORKFLOW_ID_ANOTHER_TRIAL_CAMPAIGN', 'WORKFLOW_ID_CREDIT_REACTIVATION'];
+  } else {
+    envKeys = ['WORKFLOW_ID_BTM_30DAY', 'WORKFLOW_ID_BTM_REBOOKING'];
+  }
+  await Promise.all(envKeys.map(async (key) => {
+    const wfId = readEnv(key);
+    if (!wfId) return;
+    try {
+      await removeContactFromWorkflow(contactId, wfId);
+    } catch (err) {
+      console.warn(`[exitNurtureWorkflows] ${key} removal failed (non-fatal)`, err);
+    }
+  }));
+}
+
 // ─── handleBooking ─────────────────────────────────────────────────────────
 
 export interface HandleBookingInput {
@@ -344,8 +382,9 @@ export async function handleBooking(input: HandleBookingInput): Promise<HandleBo
  *        → CREATE a new per-trainee BTM opp at RE ENROLLMENT CLASS BOOKED,
  *          with trainee_key/trainee_first_name/program/last_appointment_id CFs
  *
- * Both branches add the `return-class-booked` tag (which exits the 30-day
- * workflow at the contact level) and an audit note.
+ * Both branches DELETE the contact's enrollment in the BTM 30-day and
+ * re-booking workflows (so they stop receiving nurture messaging post-
+ * booking) and add an audit note.
  *
  * Never creates anything in LEAD_ACQ or TRIAL_CONV — those are the trial
  * funnel's responsibility, not BTM's.
@@ -398,7 +437,7 @@ async function handleBtmBooking(
         stageName: 'RE ENROLLMENT CLASS BOOKED',
         customFields: oppCfs,
       });
-      await addContactTags(input.contactId, ['return-class-booked']);
+      await exitNurtureWorkflows(input.contactId, 'btm');
       await addContactNote(
         input.contactId,
         `BTM: Re-booked — ${traineeLabel} for ${input.programName} on ${formatTrialTime(input.slotStartISO)}`,
@@ -442,7 +481,7 @@ async function handleBtmBooking(
       source: 'back-to-the-mats',
       customFields: oppCfs,
     });
-    await addContactTags(input.contactId, ['return-class-booked']);
+    await exitNurtureWorkflows(input.contactId, 'btm');
     await addContactNote(
       input.contactId,
       `BTM: Re-enrollment class booked — ${traineeLabel} for ${input.programName} on ${formatTrialTime(input.slotStartISO)}`,
@@ -497,6 +536,7 @@ async function handleTrialBooking(
       input.contactId,
       `Re-booked: ${traineeLabel} — ${input.programName}, ${formatTrialTime(input.slotStartISO)}`,
     );
+    await exitNurtureWorkflows(input.contactId, 'trial');
     return { contactId: input.contactId, opportunityId: updated.id, isRebook: true, stage: 'INTRO BOOKED' };
   }
 
@@ -545,6 +585,7 @@ async function handleTrialBooking(
     input.contactId,
     `First trial booked: ${traineeLabel} — ${input.programName}, ${formatTrialTime(input.slotStartISO)}`,
   );
+  await exitNurtureWorkflows(input.contactId, 'trial');
 
   return { contactId: input.contactId, opportunityId: created.id, isRebook: false, stage: 'INTRO BOOKED' };
 }

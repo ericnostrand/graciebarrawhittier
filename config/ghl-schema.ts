@@ -350,35 +350,28 @@ export const CUSTOM_VALUES: readonly CustomValueDef[] = [
 
   // ─── Back to the Mats campaign ───────────────────────────────────────
   {
-    fieldKey: 'back_to_mats_deadline',
+    fieldKey: 'back_to_the_mats_deadline',
     name: 'Back to the Mats Deadline',
     defaultValue: '',
     description: 'Human-readable deadline label rendered in BTM email/SMS bodies (e.g. "Friday, June 8, 2026"). Update before every campaign run. Must align with PUBLIC_BACK_TO_MATS_DEADLINE_ISO in the website Vercel env (the website auto-formats from the ISO; this value is for GHL message merge).',
   },
   {
-    fieldKey: 'back_to_mats_page_url',
+    fieldKey: 'back_to_the_mats_page_url',
     name: 'Back to the Mats Page URL',
     defaultValue: 'https://gbwhittier.com/back-to-the-mats',
     description: 'Landing-page URL referenced in every BTM email/SMS. Hardcoded in the page; this value is for GHL message merge.',
   },
   {
-    fieldKey: 'back_to_mats_offer_name',
+    fieldKey: 'back_to_the_mats_offer_name',
     name: 'Back to the Mats Offer Name',
     defaultValue: 'Back to the Mats Special',
     description: 'Display name of the offer used in subject lines / body copy.',
   },
-  {
-    fieldKey: 'back_to_mats_30day_to_expired_days',
-    name: 'BTM FORMER STUDENT → OFFER EXPIRED timeout (days)',
-    defaultValue: '30',
-    description: 'How long an opp sits in FORMER STUDENT before auto-moving to OFFER EXPIRED.',
-  },
-  {
-    fieldKey: 'back_to_mats_rebooking_to_expired_days',
-    name: 'BTM NO-SHOW → OFFER EXPIRED timeout (days)',
-    defaultValue: '14',
-    description: 'How long the BTM re-booking campaign runs before marking the opp OFFER EXPIRED.',
-  },
+  // NOTE: BTM FORMER STUDENT → OFFER EXPIRED (30d) and NO-SHOW → OFFER EXPIRED
+  // (14d) used to live here as tunable custom values. They were removed because
+  // the Wait + Update Stage steps are configured with literal day counts inside
+  // the BTM workflows in GHL — no merge tag, nothing reads them at runtime. Edit
+  // the day count inside the workflow if you need to change it.
 ] as const;
 
 // ─── Workflows ──────────────────────────────────────────────────────────────
@@ -410,14 +403,14 @@ export const WORKFLOWS: readonly WorkflowDef[] = [
   {
     envVarKey: 'WORKFLOW_ID_TRIAL_NURTURE',
     name: 'Trial Nurture Campaign',
-    description: 'Email/SMS sequence inviting NEW LEAD contacts to book their first trial. Runs for 7 days.',
+    description: 'Email/SMS sequence inviting NEW LEAD contacts to book their first trial. Runs for 7 days. Contact is removed from this workflow by the website on successful booking (see exitNurtureWorkflows in src/lib/ghl-adapter.ts).',
     trigger: { type: 'opp_stage_changed', pipelineKey: 'LEAD_ACQ', enterStage: 'TRIAL NURTURE' },
     callsWebsiteWebhook: false,
   },
   {
     envVarKey: 'WORKFLOW_ID_NURTURE_CAMPAIGN',
     name: 'Last Chance Nurture Campaign',
-    description: 'Final-push sequence for leads who didn\'t book during Trial Nurture. Runs for 14 days.',
+    description: 'Final-push sequence for leads who didn\'t book during Trial Nurture. Runs for 14 days. Contact is removed from this workflow by the website on successful booking (see exitNurtureWorkflows in src/lib/ghl-adapter.ts).',
     trigger: { type: 'opp_stage_changed', pipelineKey: 'LEAD_ACQ', enterStage: 'NURTURE CAMPAIGN' },
     callsWebsiteWebhook: false,
   },
@@ -440,14 +433,14 @@ export const WORKFLOWS: readonly WorkflowDef[] = [
   {
     envVarKey: 'WORKFLOW_ID_REBOOKING_CAMPAIGN',
     name: 'Intro Class Rebooking Campaign',
-    description: 'Email/SMS sequence pushing NO-SHOW leads to rebook. Runs for 14 days.',
+    description: 'Email/SMS sequence pushing NO-SHOW leads to rebook. Runs for 14 days. Contact is removed from this workflow by the website on successful rebook (see exitNurtureWorkflows in src/lib/ghl-adapter.ts).',
     trigger: { type: 'opp_stage_changed', pipelineKey: 'TRIAL_CONV', enterStage: 'INTRO CLASS REBOOKING' },
     callsWebsiteWebhook: false,
   },
   {
     envVarKey: 'WORKFLOW_ID_INACTIVE_REACTIVATION',
     name: 'Trial Inactive Reactivation Campaign',
-    description: 'Reactivation sequence for trials that went cold without enrolling. Runs for 21 days.',
+    description: 'Reactivation sequence for trials that went cold without enrolling. Runs for 21 days. Contact is removed from this workflow by the website on successful rebook (see exitNurtureWorkflows in src/lib/ghl-adapter.ts).',
     trigger: { type: 'opp_stage_changed', pipelineKey: 'TRIAL_CONV', enterStage: 'TRIAL INACTIVE REACTIVATION' },
     callsWebsiteWebhook: false,
   },
@@ -463,7 +456,7 @@ export const WORKFLOWS: readonly WorkflowDef[] = [
   {
     envVarKey: 'WORKFLOW_ID_ANOTHER_TRIAL_CAMPAIGN',
     name: 'Another Trial Booking Campaign',
-    description: 'Invites active-trial students to book their next class on their pass. Includes magic /rebook link.',
+    description: 'Invites active-trial students to book their next class on their pass. Includes magic /rebook link. Contact is removed from this workflow by the website on successful rebook (see exitNurtureWorkflows in src/lib/ghl-adapter.ts).',
     trigger: { type: 'opp_stage_changed', pipelineKey: 'CREDIT_MON', enterStage: 'CREDIT ACTIVE' },
     callsWebsiteWebhook: false,
   },
@@ -491,7 +484,7 @@ export const WORKFLOWS: readonly WorkflowDef[] = [
   {
     envVarKey: 'WORKFLOW_ID_CREDIT_REACTIVATION',
     name: 'Trial Active Reactivation Campaign',
-    description: 'Reactivation sequence for credit-pipeline students who went idle.',
+    description: 'Reactivation sequence for credit-pipeline students who went idle. Contact is removed from this workflow by the website on successful rebook (see exitNurtureWorkflows in src/lib/ghl-adapter.ts).',
     trigger: { type: 'opp_stage_changed', pipelineKey: 'CREDIT_MON', enterStage: 'REACTIVATION' },
     callsWebsiteWebhook: false,
   },
@@ -518,12 +511,19 @@ export const WORKFLOWS: readonly WorkflowDef[] = [
     trigger: { type: 'appointment_status_changed', calendarFilter: 'all' },
     callsWebsiteWebhook: { path: '/api/webhooks/ghl/appointment-status' },
   },
+  {
+    envVarKey: 'WORKFLOW_ID_BOT_BOOKING_ORCHESTRATOR',
+    name: '[Backflow] Bot Booking → Pipeline Orchestrator',
+    description: 'Invoked by the SMS AI booking bot via its `Trigger a Workflow` action at the end of every successful appointment booking. Fires POST /api/webhooks/ghl/agent-booking-completed so the website runs handleBooking() — creates Trial Conversion opp, moves Lead Acquisition opp to INTRO BOOKED (WON), sets trainee CFs, adds audit notes. MUST include X-GBW-Secret header.',
+    trigger: { type: 'webhook_inbound', description: 'Triggered by bot action; no native GHL trigger type — workflow exposes a manual-invocation entry point.' },
+    callsWebsiteWebhook: { path: '/api/webhooks/ghl/agent-booking-completed' },
+  },
 
   // ─── Back to the Mats campaigns ─────────────────────────────────────
   {
     envVarKey: 'WORKFLOW_ID_BTM_30DAY',
     name: 'BTM 30-Day Campaign',
-    description: '30-day re-enrollment campaign for former students. 9 emails + 3 SMS per docx Part 2. Exit on tag `return-class-booked`. Auto-move to OFFER EXPIRED after 30 days if no booking.',
+    description: '30-day re-enrollment campaign for former students. 9 emails + 3 SMS per docx Part 2. Website /api/book removes the contact from this workflow on successful BTM booking (handleBtmBooking → exitNurtureWorkflows). Wait + Update Stage to OFFER EXPIRED at the end (configured inside the workflow itself, 30 days).',
     trigger: { type: 'opp_stage_changed', pipelineKey: 'BACK_TO_MATS', enterStage: 'FORMER STUDENT' },
     callsWebsiteWebhook: false,
   },
@@ -537,7 +537,7 @@ export const WORKFLOWS: readonly WorkflowDef[] = [
   {
     envVarKey: 'WORKFLOW_ID_BTM_REBOOKING',
     name: 'BTM Re-Booking Campaign (no-show)',
-    description: '14-day re-booking nudge campaign for no-shows. 4 emails + 1 SMS per docx Part 4. Exit on tag `return-class-booked` (re-book). Auto-move to OFFER EXPIRED after 14 days if no re-book.',
+    description: '14-day re-booking nudge campaign for no-shows. 4 emails + 1 SMS per docx Part 4. Website /api/book removes the contact from this workflow on successful BTM booking (handleBtmBooking → exitNurtureWorkflows). Wait + Update Stage to OFFER EXPIRED at the end (configured inside the workflow itself, 14 days).',
     trigger: { type: 'opp_stage_changed', pipelineKey: 'BACK_TO_MATS', enterStage: 'NO-SHOW' },
     callsWebsiteWebhook: false,
   },
@@ -559,7 +559,7 @@ export const TAGS: readonly { name: string; description: string }[] = [
   { name: 'source-contact-form', description: 'Submitted the /contact form (not an opt-in but tagged for source attribution).' },
   { name: 'quarterly-reactivation', description: 'LOST/COLD lead — picked up by quarterly winback campaign.' },
   { name: 'back-to-the-mats-import', description: 'Bulk-imported via CSV into the Back to the Mats campaign. Source attribution.' },
-  { name: 'return-class-booked', description: 'Set when a former student books their re-enrollment class. Workflow exit signal for the BTM 30-Day and Re-Booking campaigns.' },
+  { name: 'source-agent-booking', description: 'Set on the contact by the agent-booking-completed webhook after the SMS bot books an appointment. Differentiates bot-driven bookings from page-driven ones in reporting.' },
 ] as const;
 
 // ─── Env var manifest ───────────────────────────────────────────────────────
@@ -609,7 +609,7 @@ export const ENV_VARS: readonly EnvVarDef[] = [
   { key: 'GHL_CAL_BTM_JUNIORS', required: false, description: 'Calendar ID for Juniors BJJ program (BTM flow).' },
   { key: 'GHL_CAL_BTM_ADULTS', required: false, description: 'Calendar ID for Adults BJJ program (BTM flow).' },
 
-  // NOTE: BTM campaign deadline lives in the `back_to_mats_deadline` GHL
+  // NOTE: BTM campaign deadline lives in the `back_to_the_mats_deadline` GHL
   // custom value (read at request time via src/lib/ghl-custom-values.ts) so
   // the studio admin can update it via Settings → Custom Values in GHL —
   // no env var, no redeploy required.
@@ -860,7 +860,7 @@ export const STAGE_TRANSITIONS: readonly StageTransition[] = [
     enterStage: 'FORMER STUDENT',
     actions: [
       { type: 'fire_workflow', workflowEnvVarKey: 'WORKFLOW_ID_BTM_30DAY' },
-      { type: 'auto_move_after', targetStage: 'OFFER EXPIRED', afterCustomValueKey: 'back_to_mats_30day_to_expired_days' },
+      // Wait 30 days → move to OFFER EXPIRED is configured inside the workflow itself.
     ],
   },
   {
@@ -878,7 +878,7 @@ export const STAGE_TRANSITIONS: readonly StageTransition[] = [
     enterStage: 'NO-SHOW',
     actions: [
       { type: 'fire_workflow', workflowEnvVarKey: 'WORKFLOW_ID_BTM_REBOOKING' },
-      { type: 'auto_move_after', targetStage: 'OFFER EXPIRED', afterCustomValueKey: 'back_to_mats_rebooking_to_expired_days' },
+      // Wait 14 days → move to OFFER EXPIRED is configured inside the workflow itself.
     ],
   },
   {
