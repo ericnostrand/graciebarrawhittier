@@ -27,5 +27,15 @@ pnpm-debug.log*
 # scaffold artifacts
 _scaffold/
 
+# browser automation / scratch artifacts
+.playwright-mcp/
+ghl-current.jpeg
+
 .vercel
 .env*.local
+
+# AI-drafted content awaiting operator review (per-client, not template)
+drafts/
+
+# Per-client intake (template stays; filled copies stay local)
+CLIENT_INTAKE.md

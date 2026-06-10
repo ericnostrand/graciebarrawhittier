@@ -34,11 +34,17 @@ import {
   getOppCfValueByKey,
 } from './ghl-opportunities';
 import { cfPayload } from './ghl-custom-fields';
+import { channelForSource, pageLabelForSource, type LeadSource } from './lead-types';
 import { deriveTraineeKey } from './trainee-key';
-import { readEnv, type OpportunityRecord } from './ghl';
+import { readEnv, GhlError, type OpportunityRecord } from './ghl';
 import { getStageId } from './ghl-pipelines';
 import { signRebookToken } from './rebook-token';
-import type { PipelineKey } from '../../config/ghl-schema';
+import {
+  APPOINTMENT_STATUS_TRANSITIONS,
+  type PipelineKey,
+  type ApptOutcome,
+  type ApptStatusTransition,
+} from '../../config/ghl-schema';
 
 /** Resolve `stageName` to its GHL ID and compare against the opp's current stage. */
 async function isAtStage(opp: OpportunityRecord, pipelineKey: PipelineKey, stageName: string): Promise<boolean> {
@@ -47,14 +53,15 @@ async function isAtStage(opp: OpportunityRecord, pipelineKey: PipelineKey, stage
   return opp.pipelineStageId === stageId;
 }
 
-export type OptInSource = 'homepage-optin' | 'kids-optin' | 'adults-optin' | 'contact-form';
+/** Page-level opt-in source slug. Registry of values lives in lead-types.ts. */
+export type OptInSource = LeadSource;
 
 export interface HandleOptInInput {
   firstName: string;
   lastName: string;
   email: string;
   phone: string;
-  source: OptInSource;
+  source: LeadSource;
   message?: string;
   trainee?: {
     firstName: string;
@@ -78,7 +85,8 @@ export interface HandleOptInResult {
  * Handle an opt-in form submission.
  *
  * Side effects (in order):
- *   1. Upsert Contact by email + phone
+ *   1. Upsert Contact by email + phone, setting the native `source` attribute
+ *      to the dashboard lead channel (Website) for the native Lead Source report
  *   2. PUT contact custom fields: lead_source (overwrite), last_page,
  *      last_trainee_key (if trainee data), credits_remaining (if empty),
  *      household_trainee_keys (append-if-new)
@@ -99,21 +107,28 @@ export async function handleOptIn(input: HandleOptInInput): Promise<HandleOptInR
       })
     : null;
 
-  // 1. Upsert contact
+  // 1. Upsert contact. The native `source` attribute is set to the dashboard
+  // lead channel so GHL's native Lead Source report attributes the contact
+  // correctly; the page-level slug is kept separately in the lead_source CF.
   const contactId = await upsertContact({
     firstName: input.firstName,
     lastName: input.lastName,
     email: input.email,
     phone: input.phone,
+    source: channelForSource(input.source),
   });
 
   // Read existing contact to detect whether household_trainee_keys needs an append.
   const existing = await getContact(contactId);
   const isNewContact = !existing;
 
-  // 2. Build CF patch (credits now live on Trial Credit Monitoring opp, not contact)
+  // 2. Build CF patch (credits now live on Trial Credit Monitoring opp, not contact).
+  // lead_source = coarse channel — mirrors native `source` so dashboard widgets
+  //               can group by it (the native attribute is not groupable);
+  // optin_page  = human-readable page sub-layer beneath the channel.
   const cfMap: Record<string, string | number | boolean | null> = {
-    lead_source: input.source,
+    lead_source: channelForSource(input.source),
+    optin_page: pageLabelForSource(input.source),
     last_page: input.page,
   };
   if (traineeKey) {
@@ -124,8 +139,12 @@ export async function handleOptIn(input: HandleOptInInput): Promise<HandleOptInR
     );
   }
 
+  // Set the native `source` on this PUT too — `/contacts/upsert` only writes
+  // `source` when it *creates* a contact, so an existing contact (e.g. a family
+  // member already in GHL) would keep a stale/blank source otherwise. The PUT
+  // reliably overwrites it, guaranteeing the Lead Source report is correct.
   const customFields = await cfPayload('contact', cfMap);
-  await updateContact(contactId, { customFields });
+  await updateContact(contactId, { source: channelForSource(input.source), customFields });
 
   // 3. Tag for source attribution
   await addContactTags(contactId, ['kickstart-funnel', `source-${input.source}`]);
@@ -224,6 +243,22 @@ function appendIfNew(existing: string, item: string): string {
 }
 
 /**
+ * YYYY-MM-DD of an ISO datetime in America/Los_Angeles. Written to the opp's
+ * `appointment_date` DATE field so GHL workflow filters like "Appointment Date
+ * is today" compare cleanly — using a full ISO datetime drifts across the
+ * UTC/Los Angeles boundary (an 11pm PT slot reads as next-day UTC).
+ */
+export function toAcademyLocalDate(iso: string): string {
+  // en-CA produces YYYY-MM-DD; locale chosen for format, not language.
+  return new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'America/Los_Angeles',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).format(new Date(iso));
+}
+
+/**
  * Format an ISO datetime as a human-readable string in America/Los_Angeles.
  * "2026-05-13T11:00:00-07:00" → "Wed, May 13 at 11:00 AM"
  * Used in audit notes that admins read in GHL.
@@ -269,15 +304,17 @@ function formatTraineeLabel(firstName: string, age: number | undefined, isSelf: 
  */
 export async function exitNurtureWorkflows(
   contactId: string,
-  funnel: 'trial' | 'credit' | 'btm',
+  funnel: 'trial' | 'credit' | 'btm' | 'revival',
 ): Promise<void> {
   let envKeys: string[];
   if (funnel === 'trial') {
     envKeys = ['WORKFLOW_ID_TRIAL_NURTURE', 'WORKFLOW_ID_NURTURE_CAMPAIGN', 'WORKFLOW_ID_REBOOKING_CAMPAIGN', 'WORKFLOW_ID_INACTIVE_REACTIVATION'];
   } else if (funnel === 'credit') {
     envKeys = ['WORKFLOW_ID_ANOTHER_TRIAL_CAMPAIGN', 'WORKFLOW_ID_CREDIT_REACTIVATION'];
-  } else {
+  } else if (funnel === 'btm') {
     envKeys = ['WORKFLOW_ID_BTM_30DAY', 'WORKFLOW_ID_BTM_REBOOKING'];
+  } else {
+    envKeys = ['WORKFLOW_ID_REVIVAL_30DAY_DRIP'];
   }
   await Promise.all(envKeys.map(async (key) => {
     const wfId = readEnv(key);
@@ -288,6 +325,38 @@ export async function exitNurtureWorkflows(
       console.warn(`[exitNurtureWorkflows] ${key} removal failed (non-fatal)`, err);
     }
   }));
+}
+
+/**
+ * Move the contact's open Revival Protocol opp (if any) to BOOKED + mark won.
+ * No-op when the contact isn't in the revival funnel — graceful for any
+ * non-revival booking that still flows through the same booking handler.
+ *
+ * Best-effort: all failures are logged and swallowed. The downstream Trial
+ * Conversion opp is already created by handleTrialBooking — a stale Revival
+ * opp is recoverable, a thrown error here is not.
+ */
+export async function moveRevivalOppToBooked(contactId: string): Promise<void> {
+  if (!readEnv('PIPELINE_ID_REVIVAL')) return; // not provisioned yet
+  try {
+    const opps = await findOpps({
+      contactId,
+      pipelineKey: 'REVIVAL',
+      status: 'open',
+      limit: 5,
+    });
+    if (opps.length === 0) return;
+    for (const opp of opps) {
+      try {
+        await moveStage({ oppId: opp.id, pipelineKey: 'REVIVAL', stageName: 'BOOKED' });
+        await setOppStatus(opp.id, 'won');
+      } catch (err) {
+        console.warn('[moveRevivalOppToBooked] move/status failed (non-fatal)', { oppId: opp.id, err });
+      }
+    }
+  } catch (err) {
+    console.warn('[moveRevivalOppToBooked] lookup failed (non-fatal)', err);
+  }
 }
 
 // ─── handleBooking ─────────────────────────────────────────────────────────
@@ -399,10 +468,21 @@ async function handleBtmBooking(
     return { contactId: input.contactId, opportunityId: '', isRebook: false, stage: 'NO_PIPELINE' };
   }
 
-  const traineeLabel = formatTraineeLabel(input.trainee.firstName, input.trainee.age, input.trainee.isSelf);
+  // Opp name includes program + trainee age so multi-trainee bookings under
+  // one contact produce visibly distinct opp cards in the pipeline view AND
+  // never collide on the GHL "Allow Duplicate Opportunity" check (which keys
+  // off opp name + contact + pipeline).
   const oppName = input.trainee.isSelf
-    ? `${input.parent.firstName} ${input.parent.lastName}`
-    : `${input.trainee.firstName} ${input.parent.lastName}`;
+    ? `${input.parent.firstName} ${input.parent.lastName} — ${input.programName} (${input.trainee.age})`
+    : `${input.trainee.firstName} ${input.parent.lastName} — ${input.programName} (${input.trainee.age})`;
+
+  console.log('[handleBtmBooking] start', {
+    contactId: input.contactId,
+    appointmentId: input.appointmentId,
+    program: input.program,
+    traineeKey,
+    oppName,
+  });
 
   // Read all open BTM opps for this contact in one round-trip.
   let btmOpps;
@@ -412,6 +492,11 @@ async function handleBtmBooking(
       pipelineKey: 'BACK_TO_MATS',
       status: 'open',
       limit: 20,
+    });
+    console.log('[handleBtmBooking] findOpps result', {
+      contactId: input.contactId,
+      count: btmOpps.length,
+      ids: btmOpps.map((o) => o.id),
     });
   } catch (err) {
     console.warn('[handleBtmBooking] findOpps failed (non-fatal)', err);
@@ -423,6 +508,10 @@ async function handleBtmBooking(
   // (e.g. they no-showed and now re-booked).
   const existingTraineeOpp = await findByTraineeKey(btmOpps, traineeKey);
   if (existingTraineeOpp) {
+    console.log('[handleBtmBooking] BRANCH_A rebook — moving existing opp', {
+      oppId: existingTraineeOpp.id,
+      traineeKey,
+    });
     try {
       const oppCfs = await cfPayload('opportunity', {
         trainee_key: traineeKey,
@@ -430,6 +519,7 @@ async function handleBtmBooking(
         program: input.program,
         last_appointment_id: input.appointmentId,
         last_appointment_start_iso: input.slotStartISO,
+        appointment_date: toAcademyLocalDate(input.slotStartISO),
       });
       await moveStage({
         oppId: existingTraineeOpp.id,
@@ -438,10 +528,6 @@ async function handleBtmBooking(
         customFields: oppCfs,
       });
       await exitNurtureWorkflows(input.contactId, 'btm');
-      await addContactNote(
-        input.contactId,
-        `BTM: Re-booked — ${traineeLabel} for ${input.programName} on ${formatTrialTime(input.slotStartISO)}`,
-      );
     } catch (err) {
       console.warn('[handleBtmBooking] rebook stage move failed (non-fatal)', err);
     }
@@ -452,9 +538,14 @@ async function handleBtmBooking(
   // The parent's FORMER STUDENT opp (if any) gets removed on the first
   // trainee booking. Subsequent trainee bookings find no FORMER STUDENT opp
   // (already gone) and just create their own opp.
+  console.log('[handleBtmBooking] BRANCH_B new trainee — scanning for FORMER STUDENT opp', {
+    traineeKey,
+    candidateOppIds: btmOpps.map((o) => o.id),
+  });
   for (const opp of btmOpps) {
     try {
       if (await isAtStage(opp, 'BACK_TO_MATS', 'FORMER STUDENT')) {
+        console.log('[handleBtmBooking] deleting FORMER STUDENT opp', { oppId: opp.id });
         await deleteOpportunity(opp.id);
         break;
       }
@@ -471,6 +562,7 @@ async function handleBtmBooking(
       program: input.program,
       last_appointment_id: input.appointmentId,
       last_appointment_start_iso: input.slotStartISO,
+      appointment_date: toAcademyLocalDate(input.slotStartISO),
       appointment_history: input.appointmentId,
     });
     const created = await createOpp({
@@ -481,14 +573,17 @@ async function handleBtmBooking(
       source: 'back-to-the-mats',
       customFields: oppCfs,
     });
+    console.log('[handleBtmBooking] BRANCH_B created opp', {
+      newOppId: created.id,
+      requestedName: oppName,
+      responseName: created.name,
+      traineeKey,
+    });
     await exitNurtureWorkflows(input.contactId, 'btm');
-    await addContactNote(
-      input.contactId,
-      `BTM: Re-enrollment class booked — ${traineeLabel} for ${input.programName} on ${formatTrialTime(input.slotStartISO)}`,
-    );
     return { contactId: input.contactId, opportunityId: created.id, isRebook: false, stage: 'RE ENROLLMENT CLASS BOOKED' };
   } catch (err) {
-    console.warn('[handleBtmBooking] createOpp failed (non-fatal)', err);
+    console.error('[handleBtmBooking] BRANCH_B createOpp failed',
+      err instanceof GhlError ? { status: err.status, body: err.bodyText, path: err.path, traineeKey, oppName } : { err, traineeKey, oppName });
     return { contactId: input.contactId, opportunityId: '', isRebook: false, stage: 'BTM_CREATE_FAILED' };
   }
 }
@@ -524,6 +619,7 @@ async function handleTrialBooking(
       program: input.program,
       last_appointment_id: input.appointmentId,
       last_appointment_start_iso: input.slotStartISO,
+      appointment_date: toAcademyLocalDate(input.slotStartISO),
     });
     const updated = await moveStage({
       oppId: existingOpp.id,
@@ -548,6 +644,7 @@ async function handleTrialBooking(
     program: input.program,
     last_appointment_id: input.appointmentId,
     last_appointment_start_iso: input.slotStartISO,
+    appointment_date: toAcademyLocalDate(input.slotStartISO),
     appointment_history: input.appointmentId,
   });
   const created = await createOpp({
@@ -559,22 +656,33 @@ async function handleTrialBooking(
     customFields: oppCfs,
   });
 
-  // Move Lead Acquisition opp → INTRO BOOKED (WON). Best-effort: missing opp
-  // is a recoverable state (walk-in book without prior opt-in), not an error.
+  // Move Lead Acquisition opp → INTRO BOOKED (WON) and consolidate. Schema
+  // contract is "one LEAD_ACQ opp per parent contact" — but races on rapid
+  // opt-in resubmits can leave duplicates. Keep one, mark won, delete the
+  // rest so the contact disappears cleanly from NEW LEAD / nurture stages.
+  // Best-effort: missing opp = walk-in without prior opt-in (recoverable).
   try {
     const leadOpps = await findOpps({
       contactId: input.contactId,
       pipelineKey: 'LEAD_ACQ',
       status: 'open',
-      limit: 5,
+      limit: 20,
     });
-    const leadOpp = leadOpps[0];
-    if (leadOpp) {
+    const [keeper, ...duplicates] = leadOpps;
+    if (keeper) {
       await moveStage({
-        oppId: leadOpp.id,
+        oppId: keeper.id,
         pipelineKey: 'LEAD_ACQ',
         stageName: 'INTRO BOOKED (WON)',
       });
+      await setOppStatus(keeper.id, 'won');
+    }
+    for (const dup of duplicates) {
+      try {
+        await deleteOpportunity(dup.id);
+      } catch (err) {
+        console.warn('[handleTrialBooking] Lead Acq duplicate delete failed (non-fatal)', { dupId: dup.id, err });
+      }
     }
   } catch (err) {
     console.warn('[handleTrialBooking] Lead Acq stage move failed (non-fatal)', err);
@@ -838,4 +946,149 @@ export async function handleCancellation(input: HandleCancellationInput): Promis
   if (cancelWf) await addContactToWorkflow(input.contactId, cancelWf);
 
   return { contactId: input.contactId, trialConvOppId: matchingOpp?.id };
+}
+
+// ─── handleAppointmentStatusChange ─────────────────────────────────────────
+// Fired when an admin changes an appointment's status in the GHL calendar
+// (Appointment List View). Finds the opportunity that owns the appointment —
+// across all three appointment-bearing pipelines (TRIAL_CONV, CREDIT_MON,
+// BACK_TO_MATS) — and applies the mapped, stage-guarded transition declared
+// in APPOINTMENT_STATUS_TRANSITIONS.
+//
+// Downstream effects (credit decrement, rebooking campaigns) are NOT run
+// here: a stage move fires the existing GHL backflow webhooks, which dispatch
+// the STAGE_TRANSITIONS actions. This handler only does the move/abandon.
+
+/** Actionable GHL appointment statuses. `confirmed`/`new` are filtered upstream. */
+export type AppointmentStatus = 'showed' | 'noshow' | 'cancelled' | 'invalid';
+
+const APPT_STATUS_LABEL: Record<AppointmentStatus, string> = {
+  showed: 'Showed',
+  noshow: 'No Show',
+  cancelled: 'Cancelled',
+  invalid: 'Invalid',
+};
+
+export interface HandleAppointmentStatusInput {
+  contactId: string;
+  appointmentId: string;
+  /** Normalized status — one of the actionable values. */
+  status: AppointmentStatus;
+  /** Optional cancellation reason, surfaced in the audit note. */
+  reason?: string;
+}
+
+export interface HandleAppointmentStatusResult {
+  contactId: string;
+  appointmentId: string;
+  /** Owning opp, when one was found. */
+  oppId?: string;
+  pipelineKey?: PipelineKey;
+  /**
+   * What happened:
+   *   - 'moved'     — opp moved to a new stage
+   *   - 'abandoned' — opp status set to abandoned
+   *   - 'noop'      — the mapping says do nothing for this status/pipeline
+   *   - 'guarded'   — opp found but not in an awaiting-classification stage
+   *   - 'unmatched' — no open opp owns this appointment
+   */
+  outcome: 'moved' | 'abandoned' | 'noop' | 'guarded' | 'unmatched';
+  /** Stage the opp landed at (only when outcome === 'moved'). */
+  stage?: string;
+}
+
+export async function handleAppointmentStatusChange(
+  input: HandleAppointmentStatusInput,
+): Promise<HandleAppointmentStatusResult> {
+  const base = { contactId: input.contactId, appointmentId: input.appointmentId };
+
+  // Locate the owning opp. The opp that owns an appointment is the one whose
+  // `last_appointment_id` CF matches. Probe each appointment-bearing pipeline
+  // independently — a pipeline that isn't provisioned yet (no PIPELINE_ID_*
+  // env var) throws on lookup and is simply skipped.
+  let found: { opp: OpportunityRecord; rule: ApptStatusTransition } | undefined;
+
+  for (const rule of APPOINTMENT_STATUS_TRANSITIONS) {
+    let opps: OpportunityRecord[];
+    try {
+      opps = await findOpps({
+        contactId: input.contactId,
+        pipelineKey: rule.pipelineKey,
+        status: 'open',
+        limit: 20,
+      });
+    } catch (err) {
+      console.warn(
+        `[handleAppointmentStatusChange] ${rule.pipelineKey} lookup skipped`,
+        String(err).slice(0, 200),
+      );
+      continue;
+    }
+    for (const opp of opps) {
+      const apptId = await getOppCfValueByKey<string>(opp, 'last_appointment_id');
+      if (apptId === input.appointmentId) {
+        found = { opp, rule };
+        break;
+      }
+    }
+    if (found) break;
+  }
+
+  if (!found) {
+    console.warn('[handleAppointmentStatusChange] no open opp owns this appointment', base);
+    return { ...base, outcome: 'unmatched' };
+  }
+
+  const { opp, rule } = found;
+  const ctx = { ...base, oppId: opp.id, pipelineKey: rule.pipelineKey };
+
+  // Pick the outcome for this status (cancelled + invalid share onCancelled).
+  const outcome: ApptOutcome =
+    input.status === 'showed'
+      ? rule.onShowed
+      : input.status === 'noshow'
+        ? rule.onNoShow
+        : rule.onCancelled;
+
+  if (outcome.action === 'none') {
+    return { ...ctx, outcome: 'noop' };
+  }
+
+  // Stage guard — only act while the opp is still awaiting classification.
+  const guardIds = await Promise.all(
+    rule.whenInStages.map((s) => getStageId(rule.pipelineKey, s)),
+  );
+  if (!opp.pipelineStageId || !guardIds.includes(opp.pipelineStageId)) {
+    console.log('[handleAppointmentStatusChange] opp not in an awaiting stage — skipping', ctx);
+    return { ...ctx, outcome: 'guarded' };
+  }
+
+  const label = APPT_STATUS_LABEL[input.status];
+  const reasonSuffix = input.reason ? ` Reason: ${input.reason}` : '';
+
+  if (outcome.action === 'abandon') {
+    await setOppStatus(opp.id, 'abandoned');
+    await addContactNote(
+      input.contactId,
+      `Appointment marked ${label} in GHL — opportunity closed (abandoned).${reasonSuffix}`,
+    );
+    // Preserve the legacy admin-cancellation followup behavior.
+    const cancelWf = readEnv('WORKFLOW_ID_CANCEL_FOLLOWUP');
+    if (cancelWf) {
+      try {
+        await addContactToWorkflow(input.contactId, cancelWf);
+      } catch (err) {
+        console.warn('[handleAppointmentStatusChange] cancel-followup enroll failed (non-fatal)', err);
+      }
+    }
+    return { ...ctx, outcome: 'abandoned' };
+  }
+
+  // outcome.action === 'move'
+  await moveStage({ oppId: opp.id, pipelineKey: rule.pipelineKey, stageName: outcome.stage });
+  await addContactNote(
+    input.contactId,
+    `Appointment marked ${label} in GHL — opportunity moved to ${outcome.stage}.${reasonSuffix}`,
+  );
+  return { ...ctx, outcome: 'moved', stage: outcome.stage };
 }

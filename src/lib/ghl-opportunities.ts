@@ -15,8 +15,16 @@ import {
   type UpdateOpportunityArgs,
 } from './ghl';
 import { getPipelineId, getStageId } from './ghl-pipelines';
-import { cacheOpportunityCustomFields, getCfId } from './ghl-custom-fields';
+import { cacheOpportunityCustomFields, getCfId, cfPayload } from './ghl-custom-fields';
+import { getCustomValue } from './ghl-custom-values';
 import type { PipelineKey } from '../../config/ghl-schema';
+
+/**
+ * Fallback used when the `enrolled_student_value` GHL custom value is missing
+ * or unparseable. Mirrors the schema's declared defaultValue in
+ * config/ghl-schema.ts — keep the two in sync.
+ */
+const ENROLLED_STUDENT_VALUE_FALLBACK = 160;
 
 /**
  * Search a contact's opportunities in a specific pipeline.
@@ -181,6 +189,24 @@ export async function setOppStatus(
   return updateOpportunity(oppId, { status });
 }
 
+/** Set an opportunity's monetary value (dashboard revenue reporting). */
+export async function setOppValue(oppId: string, monetaryValue: number): Promise<OpportunityRecord> {
+  return updateOpportunity(oppId, { monetaryValue });
+}
+
+/**
+ * Resolve the dollar value to stamp on a WON enrollment opportunity.
+ *
+ * Reads the studio-editable `enrolled_student_value` GHL custom value; falls
+ * back to {@link ENROLLED_STUDENT_VALUE_FALLBACK} when it is missing, empty, or
+ * not a positive number. Used by the `set_opp_value` transition action.
+ */
+export async function enrolledStudentValue(): Promise<number> {
+  const raw = await getCustomValue('enrolled_student_value');
+  const n = Number(raw);
+  return Number.isFinite(n) && n > 0 ? n : ENROLLED_STUDENT_VALUE_FALLBACK;
+}
+
 /** Update opportunity custom fields. */
 export async function updateOppFields(
   oppId: string,
@@ -190,3 +216,29 @@ export async function updateOppFields(
 }
 
 export type { OpportunityRecord, UpdateOpportunityArgs };
+
+/** YYYY-MM-DD in America/Los_Angeles. en-CA formats as ISO calendar date. */
+function todayInLA(): string {
+  return new Intl.DateTimeFormat('en-CA', { timeZone: 'America/Los_Angeles' })
+    .format(new Date());
+}
+
+/**
+ * Stamp `enrollment_date` on an opportunity if it is currently empty.
+ *
+ * First-write-wins: returns without writing when the opp already has a
+ * non-empty `enrollment_date`. This preserves the original enrollment date
+ * across admin stage corrections (moves out of and back into the WON stage).
+ *
+ * The TRIAL_CONV path enforces this in code; the parallel BACK_TO_MATS RE
+ * ENROLLED workflow in GHL intentionally overwrites instead (see the
+ * `Student Enrolled` workflow + docs/replication/btm-campaign-setup.md §9).
+ *
+ * Called from the stage-changed webhook on entry to STUDENT ENROLLED (WON).
+ */
+export async function stampEnrollmentDateIfEmpty(opp: OpportunityRecord): Promise<void> {
+  const existing = await getOppCfValueByKey<string>(opp, 'enrollment_date');
+  if (typeof existing === 'string' && existing.trim()) return;
+  const payload = await cfPayload('opportunity', { enrollment_date: todayInLA() });
+  await updateOppFields(opp.id, payload);
+}

@@ -89,6 +89,12 @@ export interface UpsertContactArgs {
   email: string;
   phone: string;
   marketingConsent?: boolean;
+  /**
+   * GHL native contact `source` attribute. Drives the native Lead Source
+   * report on the studio dashboard. Pass a `LeadChannel` value (e.g. "Website Leads").
+   * Last-touch: an upsert of an existing contact overwrites their prior source.
+   */
+  source?: string;
 }
 
 export async function upsertContact(args: UpsertContactArgs): Promise<string> {
@@ -100,6 +106,7 @@ export async function upsertContact(args: UpsertContactArgs): Promise<string> {
       lastName: args.lastName,
       email: args.email,
       phone: args.phone,
+      ...(args.source ? { source: args.source } : {}),
       // Tag for source visibility in GHL UI:
       tags: ['kickstart-funnel'],
     }),
@@ -272,12 +279,41 @@ export async function getContact(contactId: string): Promise<ContactRecord | nul
   }
 }
 
+export interface CalendarRecord {
+  id: string;
+  name?: string;
+  calendarType?: string;
+  appointmentPerSlot?: number | string;
+}
+
+export async function getCalendar(calendarId: string): Promise<CalendarRecord | null> {
+  try {
+    const data = (await request(
+      `/calendars/${encodeURIComponent(calendarId)}`,
+      { version: CALENDAR_VERSION },
+    )) as { calendar?: CalendarRecord } & CalendarRecord;
+    if (data.calendar) return data.calendar;
+    if (data.id) return data;
+    return null;
+  } catch (err) {
+    if (err instanceof GhlError && err.status === 404) return null;
+    throw err;
+  }
+}
+
 /** Update a contact (custom fields, name, etc.). */
 export interface UpdateContactArgs {
   firstName?: string;
   lastName?: string;
   email?: string;
   phone?: string;
+  /**
+   * GHL native contact `source` attribute. Unlike `/contacts/upsert` — which
+   * only sets `source` when *creating* a contact — this PUT reliably overwrites
+   * it on existing contacts too. Set it here to guarantee the native Lead
+   * Source value lands regardless of whether the contact already existed.
+   */
+  source?: string;
   customFields?: Array<{ id: string; field_value: string | number | boolean | null }>;
 }
 
@@ -392,6 +428,8 @@ export interface CreateAppointmentArgs {
   startISO: string;
   endISO: string;
   title: string;
+  ignoreFreeSlotValidation?: boolean;
+  assignedUserId?: string;
 }
 
 export async function createAppointment(args: CreateAppointmentArgs): Promise<string> {
@@ -407,6 +445,8 @@ export async function createAppointment(args: CreateAppointmentArgs): Promise<st
       title: args.title,
       appointmentStatus: 'confirmed',
       toNotify: true, // fire native confirmation email/SMS
+      ...(args.ignoreFreeSlotValidation ? { ignoreFreeSlotValidation: true } : {}),
+      ...(args.assignedUserId ? { assignedUserId: args.assignedUserId } : {}),
     }),
   })) as { id?: string; appointment?: { id?: string } };
   const id = data?.id ?? data?.appointment?.id;
@@ -419,4 +459,79 @@ export async function createAppointment(args: CreateAppointmentArgs): Promise<st
     );
   }
   return id;
+}
+
+export interface CalendarEventRecord {
+  id: string;
+  title?: string;
+  startTime?: string;
+  endTime?: string;
+  calendarId?: string;
+  contactId?: string;
+  appointmentStatus?: string;
+  assignedUserId?: string;
+}
+
+export async function getCalendarEvents(args: {
+  calendarId: string;
+  startTime: number;
+  endTime: number;
+}): Promise<CalendarEventRecord[]> {
+  const params = new URLSearchParams({
+    locationId: locationId(),
+    calendarId: args.calendarId,
+    startTime: String(args.startTime),
+    endTime: String(args.endTime),
+  });
+  const data = (await request(
+    `/calendars/events?${params.toString()}`,
+    { version: CALENDAR_VERSION },
+  )) as { events?: CalendarEventRecord[] };
+  return data.events ?? [];
+}
+
+export interface AppointmentRecord {
+  id: string;
+  startTime?: string;
+  endTime?: string;
+  calendarId?: string;
+  contactId?: string;
+  appointmentStatus?: string;
+}
+
+/**
+ * Fetch an appointment by ID. The bot-booking webhook uses this to read the
+ * appointment's real ISO startTime/endTime: GHL's {{appointment.start_time}}
+ * merge tag renders a locale-formatted string ("Tuesday, May 19, 2026 5:00 PM")
+ * that is NOT a valid value for an opportunity DATE custom field.
+ */
+export async function getAppointment(appointmentId: string): Promise<AppointmentRecord | null> {
+  try {
+    const data = (await request(
+      `/calendars/events/appointments/${encodeURIComponent(appointmentId)}`,
+      { version: CALENDAR_VERSION },
+    )) as { event?: AppointmentRecord; appointment?: AppointmentRecord; id?: string; startTime?: string };
+    if (data.event?.startTime) return data.event;
+    if (data.appointment?.startTime) return data.appointment;
+    if (data.id && data.startTime) return data as AppointmentRecord;
+    return null;
+  } catch (err) {
+    if (err instanceof GhlError && err.status === 404) return null;
+    throw err;
+  }
+}
+
+/**
+ * Add a note to an appointment so it appears in the appointment's Notes tab.
+ * Distinct from contact notes (which live on the contact, not the appointment).
+ * Used by /api/book to write structured booking details right after the
+ * appointment is created — replaces the workflow-driven note that was
+ * rendering "Date:" blank from a bad merge field.
+ */
+export async function createAppointmentNote(appointmentId: string, body: string): Promise<void> {
+  await request(`/calendars/appointments/${encodeURIComponent(appointmentId)}/notes`, {
+    method: 'POST',
+    version: CALENDAR_VERSION,
+    body: JSON.stringify({ body }),
+  });
 }

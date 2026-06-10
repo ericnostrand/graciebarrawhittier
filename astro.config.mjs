@@ -9,7 +9,7 @@ import dotenv from 'dotenv';
 dotenv.config();
 
 export default defineConfig({
-  site: 'https://gbwhittier.com',
+  site: 'https://www.graciebarrawhittier.com',
   output: 'server',
   adapter: vercel({
     webAnalytics: {
@@ -18,7 +18,11 @@ export default defineConfig({
   }),
   integrations: [
     sitemap({
-      filter: (page) => !page.includes('/kickstart') && !page.includes('/back-to-the-mats'),
+      filter: (page) =>
+        !page.includes('/kickstart') &&
+        !page.includes('/back-to-the-mats') &&
+        !page.includes('/rebook') &&
+        !page.includes('/offer'),
     }),
   ],
   vite: {

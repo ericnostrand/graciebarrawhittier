@@ -28,7 +28,7 @@
 
 // ─── Pipelines ──────────────────────────────────────────────────────────────
 
-export type PipelineKey = 'LEAD_ACQ' | 'TRIAL_CONV' | 'CREDIT_MON' | 'BACK_TO_MATS';
+export type PipelineKey = 'LEAD_ACQ' | 'TRIAL_CONV' | 'CREDIT_MON' | 'BACK_TO_MATS' | 'REVIVAL';
 
 export interface PipelineDef {
   key: PipelineKey;
@@ -110,6 +110,20 @@ export const PIPELINES: Record<PipelineKey, PipelineDef> = {
     wonStage: 'RE ENROLLED',
     lostStages: ['OFFER EXPIRED'] as const,
   },
+  REVIVAL: {
+    key: 'REVIVAL',
+    name: 'Revival Protocol',
+    description:
+      'Tracks manually-added cold leads through a 30-day drip re-engagement. Admin drops contacts into the 30-Day Drip workflow; the SMS bot (Alex) moves them DEAD LEAD → REVIVED LEAD on first positive reply via a Trigger-a-Workflow action. Successful bookings move the opp to BOOKED (and also create a Trial Conversion opp downstream — see handleBooking). The 30-Day Drip workflow tail moves unresponsive opps to NO RESPONSE. Mark BOOKED = Won and NO RESPONSE = Lost in GHL UI; the live pipeline currently has no Won/Lost flags set.',
+    stages: [
+      'DEAD LEAD',
+      'REVIVED LEAD',
+      'BOOKED',
+      'NO RESPONSE',
+    ] as const,
+    wonStage: 'BOOKED',
+    lostStages: ['NO RESPONSE'] as const,
+  },
 } as const;
 
 // ─── Custom Fields ──────────────────────────────────────────────────────────
@@ -132,7 +146,29 @@ export interface CustomFieldDef {
   type: CustomFieldType;
   description: string;
   setBy: 'webhook' | 'workflow' | 'admin';
+  /** Selectable option labels — REQUIRED for DROPDOWN_SINGLE, omitted otherwise. */
+  options?: readonly string[];
 }
+
+/**
+ * Human-readable opt-in page labels — the page-level sub-layer beneath the
+ * lead channel. Written to the `optin_page` contact CF and used as that
+ * dropdown's option set. src/lib/lead-types.ts's LEAD_SOURCES registry maps
+ * each page slug to one of these.
+ *
+ * Adding an ad-funnel landing page = add its label here + a registry entry in
+ * lead-types.ts. Re-run the onboard script (or add the option in the GHL UI)
+ * so the dropdown accepts the new value.
+ */
+export const OPTIN_PAGE_LABELS = [
+  'Homepage',
+  'Kids Page',
+  'Adults Page',
+  'Offer Page (QR)',
+  'Contact Page',
+  'Chat Widget',
+] as const;
+export type OptInPageLabel = (typeof OPTIN_PAGE_LABELS)[number];
 
 export const CONTACT_CUSTOM_FIELDS: readonly CustomFieldDef[] = [
   {
@@ -153,8 +189,16 @@ export const CONTACT_CUSTOM_FIELDS: readonly CustomFieldDef[] = [
     fieldKey: 'lead_source',
     label: 'Lead Source',
     type: 'TEXT',
-    description: 'Most recent form source (homepage-optin, kids-optin, adults-optin, contact-form).',
+    description: 'Coarse acquisition channel — Website Leads / Walk-In / Meta Ads / Google Ads / Referral / Website Chat. Set on every opt-in; mirrors the native contact Source attribute so dashboard widgets can group leads by channel (the native Source is not a widget group-by dimension). The page-level sub-layer is the optin_page dropdown.',
     setBy: 'webhook',
+  },
+  {
+    fieldKey: 'optin_page',
+    label: 'Opt-In Page',
+    type: 'DROPDOWN_SINGLE',
+    description: 'Human-readable page the contact opted in from (Homepage, Kids Page, Adults Page, ...). The page-level sub-layer beneath the lead channel; set alongside lead_source on every opt-in. Drives a page-level breakdown within each channel on the dashboard.',
+    setBy: 'webhook',
+    options: OPTIN_PAGE_LABELS,
   },
   {
     fieldKey: 'last_page',
@@ -179,6 +223,37 @@ export const CONTACT_CUSTOM_FIELDS: readonly CustomFieldDef[] = [
     type: 'DATE',
     description: 'Datetime the contact was bulk-imported into the Back to the Mats campaign. Used for dedupe (skip re-import if recent) and audit.',
     setBy: 'admin',
+  },
+  // ─── Conversation AI bot capture fields ─────────────────────────────────
+  // Set by Alex (Revival bot) via her Contact Info action mid-conversation,
+  // then referenced as {{contact.<fieldKey>}} in the [Backflow] Bot Booking
+  // → Pipeline Orchestrator workflow's webhook body. The website's
+  // /api/webhooks/ghl/agent-booking-completed endpoint requires child_age
+  // (3-99) to orchestrate the booking; child_name and is_self are optional
+  // (the handler infers self-booking from contact.firstName when absent).
+  {
+    fieldKey: 'trainee_first_name',
+    label: 'Trainee First Name',
+    type: 'TEXT',
+    description: 'First name of the person being booked. For self-bookings, leave empty (handler reads contact.firstName instead). For child/other-person bookings, the trainee\'s first name.',
+    setBy: 'webhook',
+  },
+  {
+    fieldKey: 'trainee_age',
+    label: 'Trainee Age',
+    type: 'NUMBER',
+    description: 'Numeric age 3-99. Drives program routing (tiny / lc1 / lc2 / juniors / adults). REQUIRED — booking webhook returns INVALID_AGE without it.',
+    setBy: 'webhook',
+  },
+  {
+    // GHL auto-generates fieldKey from the label, so "Is Self Booking" yields
+    // "is_self_booking" — the bare "is_self" key would have collided with a
+    // reserved expression in GHL's merge-tag namespace anyway.
+    fieldKey: 'is_self_booking',
+    label: 'Is Self Booking',
+    type: 'TEXT',
+    description: 'String "true" or "false". True when the contact is booking for themselves; false when booking a child or other family member. Optional — handler infers self-booking from contact.firstName match when absent.',
+    setBy: 'webhook',
   },
 ] as const;
 // Note: credits_remaining + last_decrement_trial_date moved to OPPORTUNITY_CUSTOM_FIELDS
@@ -225,7 +300,14 @@ export const OPPORTUNITY_CUSTOM_FIELDS: readonly CustomFieldDef[] = [
     fieldKey: 'last_appointment_start_iso',
     label: 'Last Appointment Start ISO',
     type: 'DATE',
-    description: 'ISO datetime of the most recent appointment.',
+    description: 'ISO datetime of the most recent appointment. Use this for time-of-day waits (e.g. 2h before). For "is today" filters use appointment_date instead — comparing a full ISO datetime drifts across the UTC/Los Angeles boundary.',
+    setBy: 'webhook',
+  },
+  {
+    fieldKey: 'appointment_date',
+    label: 'Appointment Date',
+    type: 'DATE',
+    description: 'YYYY-MM-DD of the most recent appointment in America/Los_Angeles. Powers GHL workflow filters like "Appointment Date is today" and renders as a clean date in the opp card. Written by the website alongside last_appointment_start_iso on every booking/rebook.',
     setBy: 'webhook',
   },
   {
@@ -262,6 +344,17 @@ export const OPPORTUNITY_CUSTOM_FIELDS: readonly CustomFieldDef[] = [
     type: 'TEXT',
     description: 'HMAC-signed magic-link token for /rebook page. Generated at trial activation, 90-day expiry.',
     setBy: 'workflow',
+  },
+  {
+    fieldKey: 'enrollment_date',
+    label: 'Enrollment Date',
+    type: 'DATE',
+    description:
+      'YYYY-MM-DD (America/Los_Angeles) when this opp first reached an enrolled stage ' +
+      '(TRIAL_CONV STUDENT ENROLLED (WON) or BACK_TO_MATS RE ENROLLED). First-write-wins — ' +
+      'admin nudges of the stage do not reset it. Set by the stage-changed webhook for ' +
+      'TRIAL_CONV and by the BTM RE ENROLLED workflow for BACK_TO_MATS.',
+    setBy: 'webhook',
   },
 ] as const;
 
@@ -350,6 +443,12 @@ export const CUSTOM_VALUES: readonly CustomValueDef[] = [
 
   // ─── Back to the Mats campaign ───────────────────────────────────────
   {
+    fieldKey: 'academy_name',
+    name: 'Academy Name',
+    defaultValue: 'Gracie Barra Whittier',
+    description: 'Studio display name used in BTM email/SMS merge tags ({{custom_values.academy_name}}). Pre-existing in GBW sub-account from an old snapshot; declared here so the onboard script provisions it for new academies.',
+  },
+  {
     fieldKey: 'back_to_the_mats_deadline',
     name: 'Back to the Mats Deadline',
     defaultValue: '',
@@ -358,7 +457,7 @@ export const CUSTOM_VALUES: readonly CustomValueDef[] = [
   {
     fieldKey: 'back_to_the_mats_page_url',
     name: 'Back to the Mats Page URL',
-    defaultValue: 'https://gbwhittier.com/back-to-the-mats',
+    defaultValue: 'https://www.graciebarrawhittier.com/back-to-the-mats',
     description: 'Landing-page URL referenced in every BTM email/SMS. Hardcoded in the page; this value is for GHL message merge.',
   },
   {
@@ -372,6 +471,36 @@ export const CUSTOM_VALUES: readonly CustomValueDef[] = [
   // the Wait + Update Stage steps are configured with literal day counts inside
   // the BTM workflows in GHL — no merge tag, nothing reads them at runtime. Edit
   // the day count inside the workflow if you need to change it.
+
+  // ─── Dashboard reporting ─────────────────────────────────────────────
+  {
+    fieldKey: 'enrolled_student_value',
+    name: 'Enrolled Student Value',
+    defaultValue: '160',
+    description:
+      'Dollar amount stamped on an opportunity\'s monetaryValue when it reaches a ' +
+      'first-time enrollment stage (TRIAL_CONV STUDENT ENROLLED (WON) or CREDIT_MON ' +
+      'WON ENROLLED). Powers the studio dashboard Revenue + Conversion widgets. ' +
+      'Default 160 = one month average tuition (conservative); set to a 12-month LTV estimate ' +
+      '(e.g. 1920) to show full business impact. Read at request time via ' +
+      'src/lib/ghl-custom-values.ts — the set_opp_value transition action applies it. ' +
+      'BACK_TO_MATS RE ENROLLED uses btm_student_value instead (separate value because ' +
+      're-enrolled former students have different expected LTV than first-time enrollees).',
+  },
+  {
+    fieldKey: 'btm_student_value',
+    name: 'BTM Student Value',
+    defaultValue: '80',
+    description:
+      'Dollar amount stamped on an opportunity\'s monetaryValue when it reaches the ' +
+      'BACK_TO_MATS RE ENROLLED stage. Distinct from enrolled_student_value because ' +
+      're-enrolled former students typically have a different (often lower) expected ' +
+      'LTV than first-time enrollees. Default 80 = half of enrolled_student_value\'s ' +
+      'conservative default; tune to a realistic re-enrollment LTV. Applied by the ' +
+      'BTM "Student Enrolled" GHL workflow (Update Opportunity → Monetary Value = ' +
+      '{{custom_values.btm_student_value}}) on entry to RE ENROLLED, not by any ' +
+      'website-side code.',
+  },
 ] as const;
 
 // ─── Workflows ──────────────────────────────────────────────────────────────
@@ -396,6 +525,13 @@ export interface WorkflowDef {
    * If true, the workflow MUST set the X-GBW-Secret header in that step.
    */
   callsWebsiteWebhook: false | { path: string };
+  /**
+   * Whether the env var for this workflow is required for the website to function.
+   * Defaults to true. Set to false for inbound-only workflows (GHL calls the website;
+   * the website never calls the workflow) so onboard checks don't fail when the workflow
+   * hasn't been built yet (e.g. during initial bootstrap).
+   */
+  required?: boolean;
 }
 
 export const WORKFLOWS: readonly WorkflowDef[] = [
@@ -426,7 +562,16 @@ export const WORKFLOWS: readonly WorkflowDef[] = [
   {
     envVarKey: 'WORKFLOW_ID_PRE_TRIAL_REMINDERS',
     name: 'Pre-Trial Reminders',
-    description: '24h-before + 2h-before SMS/email reminders for the first trial appointment.',
+    description:
+      'Unified reminder workflow for BOTH first-trial and active-credit-pass rebook appointments. ' +
+      'Triggered by "Customer Booked Appointment" on the trial calendar group (both flows write to the same ' +
+      'per-program trial calendar — see getProgram(program).calendarIdEnvVar in src/data/programs.ts). ' +
+      'Branches on a Find Opportunity step against the Trial Credit Monitoring pipeline: ' +
+      'Found = active credit pass exists → REBOOK branch (3d / 1d / 2h reminders only), ' +
+      'Not Found = no credit pass yet → FIRST-TRIAL branch (welcome Confirmation Email + SMS, then 3d / 1d / 2h reminders). ' +
+      'Wait steps anchor on {{appointment.start_time}} from the trigger event — do NOT reference opp ' +
+      'last_appointment_start_iso (suffers a race vs. the moveStage commit). ' +
+      'Replaces the previously-separate "Rebooking Reminders" workflow which fired on CREDIT_MON → ANOTHER TRIAL BOOKED.',
     trigger: { type: 'appointment_status_changed', calendarFilter: 'all' },
     callsWebsiteWebhook: false,
   },
@@ -458,13 +603,6 @@ export const WORKFLOWS: readonly WorkflowDef[] = [
     name: 'Another Trial Booking Campaign',
     description: 'Invites active-trial students to book their next class on their pass. Includes magic /rebook link. Contact is removed from this workflow by the website on successful rebook (see exitNurtureWorkflows in src/lib/ghl-adapter.ts).',
     trigger: { type: 'opp_stage_changed', pipelineKey: 'CREDIT_MON', enterStage: 'CREDIT ACTIVE' },
-    callsWebsiteWebhook: false,
-  },
-  {
-    envVarKey: 'WORKFLOW_ID_REBOOK_REMINDERS',
-    name: 'Rebooking Reminders',
-    description: '24h + 2h reminders for ANOTHER TRIAL BOOKED appointments.',
-    trigger: { type: 'opp_stage_changed', pipelineKey: 'CREDIT_MON', enterStage: 'ANOTHER TRIAL BOOKED' },
     callsWebsiteWebhook: false,
   },
   {
@@ -519,6 +657,16 @@ export const WORKFLOWS: readonly WorkflowDef[] = [
     callsWebsiteWebhook: { path: '/api/webhooks/ghl/agent-booking-completed' },
   },
 
+  // ─── Inbound orchestrators (GHL → /api/lead) ───────────────────────────
+  {
+    envVarKey: 'WORKFLOW_ID_CHAT_WIDGET_ORCHESTRATOR',
+    name: '[Inbound] Chat Widget → Pipeline Orchestrator',
+    description: 'GHL workflow fired on chat-widget Contact Created. POSTs to /api/lead via X-GBW-Secret to feed the lead into Lead Acquisition pipeline. Inbound-only — the website never calls this workflow.',
+    trigger: { type: 'webhook_inbound', description: 'Triggered by GHL Contact Created event (channel=Chat). No outbound call from the website.' },
+    callsWebsiteWebhook: { path: '/api/lead' },
+    required: false,
+  },
+
   // ─── Back to the Mats campaigns ─────────────────────────────────────
   {
     envVarKey: 'WORKFLOW_ID_BTM_30DAY',
@@ -530,8 +678,8 @@ export const WORKFLOWS: readonly WorkflowDef[] = [
   {
     envVarKey: 'WORKFLOW_ID_BTM_CONFIRMATION',
     name: 'BTM Appointment Confirmation',
-    description: '3 emails + 2 SMS confirming a booked re-enrollment session. Per docx Part 3. Triggers on opp moving to RE-ENROLLMENT CLASS BOOKED.',
-    trigger: { type: 'opp_stage_changed', pipelineKey: 'BACK_TO_MATS', enterStage: 'RE-ENROLLMENT CLASS BOOKED' },
+    description: '3 emails + 2 SMS confirming a booked re-enrollment session. Per docx Part 3. Triggers on opp moving to RE ENROLLMENT CLASS BOOKED. Ends with a Wait (until Last Appointment Start ISO @ 12:01 AM) + Update Stage to APPOINTMENT TODAY step — implements auto_move_on_appointment_day declared in STAGE_TRANSITIONS. Configured inside the workflow in GHL UI; see docs/back-to-the-mats-ghl-setup.md §2.2.',
+    trigger: { type: 'opp_stage_changed', pipelineKey: 'BACK_TO_MATS', enterStage: 'RE ENROLLMENT CLASS BOOKED' },
     callsWebsiteWebhook: false,
   },
   {
@@ -539,6 +687,15 @@ export const WORKFLOWS: readonly WorkflowDef[] = [
     name: 'BTM Re-Booking Campaign (no-show)',
     description: '14-day re-booking nudge campaign for no-shows. 4 emails + 1 SMS per docx Part 4. Website /api/book removes the contact from this workflow on successful BTM booking (handleBtmBooking → exitNurtureWorkflows). Wait + Update Stage to OFFER EXPIRED at the end (configured inside the workflow itself, 14 days).',
     trigger: { type: 'opp_stage_changed', pipelineKey: 'BACK_TO_MATS', enterStage: 'NO-SHOW' },
+    callsWebsiteWebhook: false,
+  },
+
+  // ─── Revival Protocol campaign ──────────────────────────────────────
+  {
+    envVarKey: 'WORKFLOW_ID_REVIVAL_30DAY_DRIP',
+    name: '30-Day Drip',
+    description: '30-day re-engagement drip for manually-added cold leads in the Revival Protocol pipeline. Admin drops a DEAD LEAD into this workflow on entry. Website removes the contact from this workflow on successful booking via exitNurtureWorkflows(contactId, "revival") in src/lib/ghl-adapter.ts. The workflow tail is a Wait + Update Opp Stage to NO RESPONSE (literal day count inside the workflow — edit there to change).',
+    trigger: { type: 'webhook_inbound', description: 'Triggered manually by admin (Add Contact to Workflow). No native GHL trigger.' },
     callsWebsiteWebhook: false,
   },
 
@@ -557,9 +714,11 @@ export const TAGS: readonly { name: string; description: string }[] = [
   { name: 'source-kids-optin', description: 'Opted in via /kids-martial-arts.' },
   { name: 'source-adults-optin', description: 'Opted in via /adults-jiu-jitsu.' },
   { name: 'source-contact-form', description: 'Submitted the /contact form (not an opt-in but tagged for source attribution).' },
+  { name: 'source-chat-widget', description: 'Opted in via the bottom-right chat widget.' },
   { name: 'quarterly-reactivation', description: 'LOST/COLD lead — picked up by quarterly winback campaign.' },
   { name: 'back-to-the-mats-import', description: 'Bulk-imported via CSV into the Back to the Mats campaign. Source attribution.' },
   { name: 'source-agent-booking', description: 'Set on the contact by the agent-booking-completed webhook after the SMS bot books an appointment. Differentiates bot-driven bookings from page-driven ones in reporting.' },
+  { name: 'revival_protocol_lead', description: 'Applied by the 30-Day Drip workflow when a cold lead enters the Revival Protocol funnel. Segment marker for filtering/reporting; bot assignment is handled by the workflow\'s Update Conversation AI Bot step, not by this tag.' },
 ] as const;
 
 // ─── Env var manifest ───────────────────────────────────────────────────────
@@ -590,7 +749,7 @@ export const ENV_VARS: readonly EnvVarDef[] = [
   ...WORKFLOWS.map(
     (w): EnvVarDef => ({
       key: w.envVarKey,
-      required: true,
+      required: w.required ?? true,
       description: `Workflow ID for: ${w.name}`,
     }),
   ),
@@ -651,6 +810,26 @@ export type TransitionAction =
   | { type: 'fire_workflow'; workflowEnvVarKey: string }
   | { type: 'add_tag'; tagName: string }
   | { type: 'set_status'; status: 'won' | 'lost' | 'abandoned' }
+  /**
+   * Set the opportunity's `monetaryValue` from a GHL custom value so the studio
+   * dashboard Revenue + Conversion widgets report real dollars.
+   *
+   * Applied only on the *canonical* enrollment record per student, to avoid
+   * double-counting one enrollment across pipelines:
+   *   - TRIAL_CONV STUDENT ENROLLED (WON) — both the direct-conversion path and
+   *     the credit path end here (CREDIT_MON WON ENROLLED cross-marks the Trial
+   *     Conv opp won), so this is the single source of enrollment revenue.
+   *   - BACK_TO_MATS RE ENROLLED — a distinct re-enrollment sale, no overlap.
+   * CREDIT_MON WON ENROLLED deliberately does NOT carry it.
+   *
+   * Implemented in the stage-changed webhook handler (TRIAL_CONV) — fires
+   * whether the website or an admin moved the opp, since the backflow webhook
+   * triggers on any stage change. BACK_TO_MATS has NO backflow webhook, so an
+   * admin moving an opp to RE ENROLLED never reaches the website; its value
+   * must be set by a GHL workflow that triggers on entry to the RE ENROLLED
+   * stage (Update Opportunity → Monetary Value). See docs/replication/ghl-dashboard-build-spec.md §4.
+   */
+  | { type: 'set_opp_value'; fromCustomValueKey: string }
   /** Set Contact.credits_remaining (canonical source of truth). */
   | { type: 'set_credits'; value: number | 'default' }
   /**
@@ -770,6 +949,7 @@ export const STAGE_TRANSITIONS: readonly StageTransition[] = [
     enterStage: 'STUDENT ENROLLED (WON)',
     actions: [
       { type: 'set_status', status: 'won' },
+      { type: 'set_opp_value', fromCustomValueKey: 'enrolled_student_value' },
       { type: 'fire_workflow', workflowEnvVarKey: 'WORKFLOW_ID_90_DAY_REVIEW' },
     ],
   },
@@ -795,7 +975,10 @@ export const STAGE_TRANSITIONS: readonly StageTransition[] = [
     pipelineKey: 'CREDIT_MON',
     enterStage: 'ANOTHER TRIAL BOOKED',
     actions: [
-      { type: 'fire_workflow', workflowEnvVarKey: 'WORKFLOW_ID_REBOOK_REMINDERS' },
+      // Reminder messaging is no longer fired from this stage transition —
+      // it's handled by the unified Pre-Trial Reminders workflow which
+      // triggers on "Customer Booked Appointment" and branches on Find
+      // Opportunity to send rebook copy (see WORKFLOW_ID_PRE_TRIAL_REMINDERS).
       // Auto-move to APPOINTMENT TODAY at 00:01 on the day of the appointment
       // so admin sees a daily list of "appointments today to classify."
       { type: 'auto_move_on_appointment_day', targetStage: 'APPOINTMENT TODAY' },
@@ -841,6 +1024,10 @@ export const STAGE_TRANSITIONS: readonly StageTransition[] = [
     enterStage: 'WON ENROLLED',
     actions: [
       { type: 'set_status', status: 'won' },
+      // No set_opp_value here — this stage cross-marks the Trial Conv opp
+      // STUDENT ENROLLED (WON), which carries the revenue. Stamping a value
+      // here too would double-count the enrollment. See the set_opp_value
+      // TransitionAction doc above.
       { type: 'fire_workflow', workflowEnvVarKey: 'WORKFLOW_ID_90_DAY_REVIEW' },
     ],
   },
@@ -886,6 +1073,19 @@ export const STAGE_TRANSITIONS: readonly StageTransition[] = [
     enterStage: 'RE ENROLLED',
     actions: [
       { type: 'set_status', status: 'won' },
+      // No BTM backflow webhook — an admin moving an opp here never reaches the
+      // website. set_opp_value AND enrollment_date stamping are both applied by
+      // the BTM "Student Enrolled" GHL workflow on entry to RE ENROLLED:
+      //   Update Opportunity → Monetary Value = {{custom_values.btm_student_value}}
+      //     (NOTE: btm_student_value, NOT enrolled_student_value — re-enrolled
+      //      former students have a separate LTV bucket. See the custom-value
+      //      definition above.)
+      //   Update Opportunity → Enrollment Date = {{right_now.date}}
+      //     (intentionally unconditional — BTM does NOT enforce first-write-wins
+      //      the way the TRIAL_CONV stage-changed webhook handler does. Admin
+      //      moving an opp out of and back into RE ENROLLED resets the date.)
+      // See docs/replication/btm-campaign-setup.md §9.
+      { type: 'set_opp_value', fromCustomValueKey: 'btm_student_value' },
       { type: 'fire_workflow', workflowEnvVarKey: 'WORKFLOW_ID_90_DAY_REVIEW' },
     ],
   },
@@ -895,6 +1095,83 @@ export const STAGE_TRANSITIONS: readonly StageTransition[] = [
     actions: [
       { type: 'set_status', status: 'lost' },
     ],
+  },
+] as const;
+
+// ─── Appointment-status → stage transitions (declarative) ──────────────────
+// Drives the appointment-status backflow: when an admin changes an
+// appointment's status in the GHL calendar (Appointment List View), the
+// website locates the opportunity that owns that appointment — matched by the
+// opp's `last_appointment_id` CF — and applies the mapped, stage-guarded move.
+//
+// Read by handleAppointmentStatusChange in src/lib/ghl-adapter.ts, invoked
+// from /api/webhooks/ghl/appointment-status (trigger WORKFLOW_ID_APPT_STATUS_WEBHOOK).
+//
+// GHL appointment statuses: confirmed | showed | noshow | cancelled | invalid.
+//   - confirmed / new → no-op (booking already placed the opp in its booked
+//     stage; nothing to mirror).
+//   - showed / noshow / cancelled / invalid → see the rules below. Cancelled
+//     and Invalid share one outcome (`onCancelled`).
+//
+// Downstream effects are NOT duplicated here — a stage move fires the existing
+// backflow webhooks (stage-changed / credit-stage-changed) which run the
+// STAGE_TRANSITIONS actions (credit decrement, rebooking campaigns, etc.).
+
+/** What to do to the owning opp for a given appointment-status change. */
+export type ApptOutcome =
+  /** Move the opp to `stage`. Downstream effects run via STAGE_TRANSITIONS. */
+  | { action: 'move'; stage: string }
+  /** Set the opp status to "abandoned" (soft close). */
+  | { action: 'abandon' }
+  /** Leave the opp untouched (admin classifies it by hand). */
+  | { action: 'none' };
+
+export interface ApptStatusTransition {
+  pipelineKey: PipelineKey;
+  /**
+   * The opp must currently be in one of these "awaiting classification"
+   * stages for any outcome to apply. Guards against the dropdown overriding
+   * an admin who already moved the opp card downstream by hand.
+   */
+  whenInStages: readonly string[];
+  /** Appointment marked "Showed". */
+  onShowed: ApptOutcome;
+  /** Appointment marked "No Show". */
+  onNoShow: ApptOutcome;
+  /** Appointment marked "Cancelled" OR "Invalid" — both map here. */
+  onCancelled: ApptOutcome;
+}
+
+export const APPOINTMENT_STATUS_TRANSITIONS: readonly ApptStatusTransition[] = [
+  {
+    pipelineKey: 'TRIAL_CONV',
+    whenInStages: ['INTRO BOOKED', 'TRIAL APPOINTMENT DONE'],
+    // "Showed" only marks attendance — it lands the opp in the neutral
+    // classify stage. Enroll-vs-give-pass stays a separate admin decision.
+    onShowed: { action: 'move', stage: 'TRIAL APPOINTMENT DONE' },
+    onNoShow: { action: 'move', stage: 'NO-SHOW' },
+    onCancelled: { action: 'abandon' },
+  },
+  {
+    pipelineKey: 'CREDIT_MON',
+    whenInStages: ['ANOTHER TRIAL BOOKED', 'APPOINTMENT TODAY'],
+    // ATTENDED APPOINTMENT triggers the idempotent credit decrement via the
+    // credit-stage-changed backflow + STAGE_TRANSITIONS.
+    onShowed: { action: 'move', stage: 'ATTENDED APPOINTMENT' },
+    onNoShow: { action: 'move', stage: 'NO-SHOW' },
+    // A cancelled rebook must NOT abandon the credit opp — the trainee still
+    // holds a valid trial pass. Return it to CREDIT ACTIVE to re-offer booking.
+    onCancelled: { action: 'move', stage: 'CREDIT ACTIVE' },
+  },
+  {
+    pipelineKey: 'BACK_TO_MATS',
+    whenInStages: ['RE ENROLLMENT CLASS BOOKED', 'APPOINTMENT TODAY'],
+    // BTM has no neutral "attended" stage — RE ENROLLED is a re-enrollment
+    // sale. "Showed" leaves the opp at APPOINTMENT TODAY for the admin to
+    // mark RE ENROLLED by hand.
+    onShowed: { action: 'none' },
+    onNoShow: { action: 'move', stage: 'NO-SHOW' },
+    onCancelled: { action: 'abandon' },
   },
 ] as const;
 
@@ -909,6 +1186,7 @@ export const GHL_SCHEMA = {
   tags: TAGS,
   envVars: ENV_VARS,
   stageTransitions: STAGE_TRANSITIONS,
+  appointmentStatusTransitions: APPOINTMENT_STATUS_TRANSITIONS,
 } as const;
 
 export type GhlSchema = typeof GHL_SCHEMA;

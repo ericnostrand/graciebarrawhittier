@@ -20,6 +20,30 @@ export const nap = {
   },
   priceRange: '$$',
   serviceAreas: ['Whittier', 'La Habra', 'La Mirada', 'Pico Rivera'],
+  social: {
+    instagram: 'https://www.instagram.com/graciebarrawhittier/',
+    facebook: 'https://www.facebook.com/graciebarrawhittier/',
+    googleBusiness: 'https://share.google/6bdDUn4PBYx81HmW4',
+    yelp: 'https://www.yelp.com/biz/gracie-barra-whittier-whittier',
+  },
+  /**
+   * Public Google Business Profile rating and review count.
+   * Used by SchemaLocalBusiness `aggregateRating` for AI search engines.
+   * Refresh manually when GMB changes meaningfully (every few months is fine).
+   */
+  rating: {
+    average: 5.0,
+    count: 120,
+  },
+  /**
+   * Academy opening hours — confirmed against the studio's published hours.
+   * Friday has a shorter window (advanced-only block).
+   */
+  hours: [
+    { days: ['Monday', 'Tuesday', 'Wednesday', 'Thursday'], opens: '11:00', closes: '21:00' },
+    { days: ['Friday'], opens: '16:00', closes: '20:00' },
+    { days: ['Saturday'], opens: '10:00', closes: '14:00' },
+  ],
 } as const;
 
 export type Nap = typeof nap;

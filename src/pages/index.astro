@@ -6,6 +6,7 @@ import SchemaLocalBusiness from '../components/seo/SchemaLocalBusiness.astro';
 import SchemaFAQ from '../components/seo/SchemaFAQ.astro';
 import CTAButton from '../components/cta/CTAButton.astro';
 import OptInForm from '../components/form/OptInForm.astro';
+import AIChatWidget from '../components/widgets/AIChatWidget.astro';
 import { homepageFaqs } from '../content/faqs';
 import { nap } from '../content/nap';
 
@@ -60,7 +61,9 @@ const galleryImages = [
 <BaseLayout
   title="BJJ Classes in Whittier, CA"
   description="Brazilian Jiu-Jitsu classes in Whittier, CA for kids and adults. World-class Gracie Barra curriculum. Claim your Free 3-Class Pass — no risk, no contracts, free uniform rental included."
-  canonical="https://gbwhittier.com/"
+  canonical="https://www.graciebarrawhittier.com/"
+  ogImage="/og/home.jpg"
+  ogImageAlt="Two adult Gracie Barra Whittier students in red and black rashguards shaking hands after training"
 >
   <div class="bg-gb-bg-light">
     {/* ============================================================
@@ -98,15 +101,15 @@ const galleryImages = [
             </div>
 
             <p class="text-xs md:text-sm font-semibold uppercase text-gb-gold tracking-wide mb-4">
-              Brazilian Jiu-Jitsu Classes in Whittier, CA for Kids and Adults
+              For Kids &amp; Adults — Beginner Friendly
             </p>
 
-            <h1 class="text-base md:text-lg font-semibold text-gb-white/90 mb-3">
+            <h1 class="text-3xl sm:text-4xl md:text-5xl lg:text-6xl font-extrabold tracking-tight text-gb-white leading-[1.05] mb-4">
               Brazilian Jiu-Jitsu Classes in Whittier, CA
             </h1>
-            <h2 class="text-3xl sm:text-4xl md:text-5xl lg:text-6xl font-extrabold tracking-tight text-gb-white leading-[1.05] mb-5">
-              Build Confidence.<br />Learn Real Self-Defense.
-            </h2>
+            <p class="text-xl md:text-2xl font-bold text-gb-white/95 leading-snug mb-5">
+              Build Confidence. Learn Real Self-Defense.
+            </p>
 
             <p class="text-sm md:text-base text-gb-white/90 leading-relaxed max-w-xl">
               Structured Brazilian Jiu-Jitsu for kids, teens, and adults. Develop discipline, focus, and strength — on and off the mat.
@@ -196,7 +199,7 @@ const galleryImages = [
               <p class="mt-3 text-sm text-gb-text-muted leading-relaxed flex-1">
                 Our kids Brazilian Jiu-Jitsu classes in Whittier focus on discipline, confidence, and respect in a fun and structured environment.
               </p>
-              <a href="/kids-martial-arts" class="mt-6 inline-flex items-center justify-center w-full h-11 rounded-full border-2 border-gb-red text-gb-red font-semibold hover:bg-gb-red hover:text-white transition-colors">
+              <a href="/kids-martial-arts/" class="mt-6 inline-flex items-center justify-center w-full h-11 rounded-full border-2 border-gb-red text-gb-red font-semibold hover:bg-gb-red hover:text-white transition-colors">
                 Learn More
               </a>
             </div>
@@ -217,7 +220,7 @@ const galleryImages = [
               <p class="mt-3 text-sm text-gb-text-muted leading-relaxed flex-1">
                 Our adult Jiu-Jitsu program in Whittier helps you improve fitness, relieve stress, and learn practical self-defense regardless of experience level.
               </p>
-              <a href="/adults-jiu-jitsu" class="mt-6 inline-flex items-center justify-center w-full h-11 rounded-full border-2 border-gb-red text-gb-red font-semibold hover:bg-gb-red hover:text-white transition-colors">
+              <a href="/adults-jiu-jitsu/" class="mt-6 inline-flex items-center justify-center w-full h-11 rounded-full border-2 border-gb-red text-gb-red font-semibold hover:bg-gb-red hover:text-white transition-colors">
                 Learn More
               </a>
             </div>
@@ -238,26 +241,6 @@ const galleryImages = [
           </p>
           <div class="mt-5 inline-block">
             <CTAButton variant="primary" label="Claim My Free 3-Class Pass" href="#trial" />
-          </div>
-        </div>
-
-        <div class="mt-6 pt-5 border-t border-gb-bg-light flex flex-col md:flex-row md:items-center md:justify-between gap-4">
-          <p class="text-base font-semibold text-gb-navy">What our clients say about us</p>
-          <div class="flex items-center gap-4">
-            <div class="text-right">
-              <p class="text-2xl font-extrabold text-gb-navy">0.00</p>
-              <div class="flex gap-0.5 text-gb-gold" aria-label="0 out of 5 stars">
-                {Array.from({ length: 5 }).map(() => (
-                  <svg class="w-4 h-4" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5">
-                    <path d="M9.05 2.927c.3-.921 1.603-.921 1.902 0l1.286 3.957a1 1 0 00.95.69h4.162c.969 0 1.371 1.24.588 1.81l-3.367 2.446a1 1 0 00-.364 1.118l1.287 3.957c.3.922-.755 1.688-1.54 1.118l-3.366-2.446a1 1 0 00-1.176 0l-3.366 2.446c-.785.57-1.84-.196-1.54-1.118l1.286-3.957a1 1 0 00-.363-1.118L2.073 9.384c-.783-.57-.38-1.81.588-1.81h4.162a1 1 0 00.951-.69l1.286-3.957z" />
-                  </svg>
-                ))}
-              </div>
-              <p class="text-xs text-gb-text-muted">0 reviews</p>
-            </div>
-            <a href="/reviews" class="inline-flex items-center justify-center h-10 px-5 rounded-md bg-blue-600 text-white text-sm font-semibold hover:bg-blue-700 transition-colors">
-              Write a review
-            </a>
           </div>
         </div>
       </div>
@@ -548,4 +531,5 @@ const galleryImages = [
 
   <SchemaFAQ items={homepageFaqs} />
   <SchemaLocalBusiness />
+  <AIChatWidget />
 </BaseLayout>

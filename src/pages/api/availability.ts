@@ -3,7 +3,8 @@ import { AvailabilityRequest, type AvailabilitySlot } from '../../lib/booking-ty
 import { generateSlots } from '../../lib/slot-resolver';
 import { getCalendarIdEnvVar } from '../../data/programs';
 import { blackouts } from '../../data/blackouts';
-import { getFreeSlots, GhlError, readEnv } from '../../lib/ghl';
+import { getCalendar, getCalendarEvents, getFreeSlots, GhlError, readEnv } from '../../lib/ghl';
+import { appointmentPerSlot, filterSlotsByCapacity } from '../../lib/slot-capacity';
 
 export const prerender = false;
 
@@ -34,18 +35,26 @@ export const GET: APIRoute = async ({ url }) => {
     return json({ ok: false, code: 'GHL_UNAVAILABLE' });
   }
 
-  let freeFromGhl: Set<string>;
+  let capacity = 1;
+  let events: Awaited<ReturnType<typeof getCalendarEvents>> = [];
+  let freeStartISOs = new Set<string>();
   try {
-    freeFromGhl = await getFreeSlots({ calendarId, startDate: fromMs, endDate: toMs });
+    const [calendar, calendarEvents, freeSlots] = await Promise.all([
+      getCalendar(calendarId),
+      getCalendarEvents({ calendarId, startTime: fromMs, endTime: toMs }),
+      getFreeSlots({ calendarId, startDate: fromMs, endDate: toMs }),
+    ]);
+    capacity = appointmentPerSlot(calendar?.appointmentPerSlot);
+    events = calendarEvents;
+    freeStartISOs = freeSlots;
   } catch (err) {
-    console.error('[availability] GHL free-slots failed',
+    console.error('[availability] GHL calendar capacity/events failed',
       err instanceof GhlError ? { status: err.status, body: err.bodyText } : err);
     return json({ ok: false, code: 'GHL_UNAVAILABLE' });
   }
 
-  // Build the template slots (no booked subtraction yet), then keep only those
-  // that GHL also reports as free. This combines our schedule.ts source of truth
-  // with GHL's actual capacity & manual bookings.
+  // Build the template slots, then keep slots whose active appointment count is
+  // below the calendar's class capacity.
   const templateSlots: AvailabilitySlot[] = generateSlots({
     programKey: program,
     fromISODate: from,
@@ -55,7 +64,12 @@ export const GET: APIRoute = async ({ url }) => {
     now: new Date(),
     minLeadMinutes: MIN_LEAD_MINUTES,
   });
-  const slots = templateSlots.filter((s) => freeFromGhl.has(s.startISO));
+  const slots = filterSlotsByCapacity({
+    slots: templateSlots,
+    events,
+    freeStartISOs,
+    appointmentPerSlot: capacity,
+  });
 
   return json(
     { ok: true, slots },

@@ -8,18 +8,19 @@ import BaseLayout from '../layouts/BaseLayout.astro';
 import CTAButton from '../components/cta/CTAButton.astro';
 import OptInModal from '../components/form/OptInModal.astro';
 import SchemaBreadcrumb from '../components/seo/SchemaBreadcrumb.astro';
+import SchemaReview from '../components/seo/SchemaReview.astro';
 import { reviews } from '../content/reviews';
 
 const breadcrumb = [
-  { name: 'Home', url: 'https://gbwhittier.com/' },
-  { name: 'Reviews', url: 'https://gbwhittier.com/reviews/' },
+  { name: 'Home', url: 'https://www.graciebarrawhittier.com/' },
+  { name: 'Reviews', url: 'https://www.graciebarrawhittier.com/reviews/' },
 ];
 ---
 
 <BaseLayout
   title="Reviews — Gracie Barra Whittier | Brazilian Jiu-Jitsu in Whittier, CA"
   description="Read reviews from students and families training at Gracie Barra Whittier. See why families across Whittier, La Habra, La Mirada, and Pico Rivera trust us for kids and adult BJJ."
-  canonical="https://gbwhittier.com/reviews/"
+  canonical="https://www.graciebarrawhittier.com/reviews/"
 >
   <div class="bg-gb-bg-light">
     {/* HERO — rounded card on light-gray background */}
@@ -43,14 +44,19 @@ const breadcrumb = [
 
     {/* LIVE REVIEWS WIDGET */}
     <section class="px-4 md:px-6 pt-10 pb-12 md:pt-14 md:pb-16">
-      <div class="max-w-6xl mx-auto bg-gb-white rounded-2xl shadow-sm p-6 md:p-10">
-        <div class="text-center mb-6">
-          <h2 class="text-2xl md:text-4xl font-extrabold text-gb-navy">Live Google Reviews</h2>
-          <p class="mt-2 text-sm text-gb-text-muted">Powered by Google Reviews — updated in real time</p>
+      <div class="max-w-6xl mx-auto bg-gb-white rounded-2xl shadow-sm p-4 md:p-10">
+        <div id="reviews-widget" class="bg-gb-bg-light rounded-xl p-3 md:p-8">
+          <iframe
+            class="lc_reviews_widget"
+            src="https://reputationhub.site/reputation/widgets/review_widget/eMHOrbrPAfFd2S1ORNKL"
+            frameborder="0"
+            scrolling="no"
+            style="min-width: 100%; width: 100%;"
+            title="Gracie Barra Whittier Google Reviews"
+            loading="lazy"
+          ></iframe>
         </div>
-        <div id="reviews-widget" class="bg-gb-bg-light rounded-xl p-6 md:p-8 text-center text-gb-text-muted">
-          Reviews loading...
-        </div>
+        <script is:inline src="https://reputationhub.site/reputation/assets/review-widget.js"></script>
       </div>
     </section>
 
@@ -81,7 +87,7 @@ const breadcrumb = [
             </article>
           ))}
         </div>
-        <p class="mt-8 text-xs text-gb-text-muted text-center">Placeholder quotes pending publication of real reviews.</p>
+        <p class="mt-8 text-xs text-gb-text-muted text-center">Real student & family reviews sourced from Google.</p>
       </div>
     </section>
 
@@ -104,4 +110,5 @@ const breadcrumb = [
 
   <OptInModal />
   <SchemaBreadcrumb items={breadcrumb} />
+  <SchemaReview items={reviews} />
 </BaseLayout>

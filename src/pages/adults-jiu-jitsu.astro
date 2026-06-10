@@ -9,9 +9,13 @@ import { Image } from 'astro:assets';
 import BaseLayout from '../layouts/BaseLayout.astro';
 import CTAButton from '../components/cta/CTAButton.astro';
 import OptInForm from '../components/form/OptInForm.astro';
+import AIChatWidget from '../components/widgets/AIChatWidget.astro';
 import SchemaBreadcrumb from '../components/seo/SchemaBreadcrumb.astro';
 import SchemaFAQ from '../components/seo/SchemaFAQ.astro';
+import SchemaCourse from '../components/seo/SchemaCourse.astro';
+import SchemaPerson from '../components/seo/SchemaPerson.astro';
 import { adultsFaqs } from '../content/adults-faqs';
+import { instructors } from '../content/instructors';
 import adultsHero from '../assets/images/adults/adults-hero.jpg';
 
 const programs = [
@@ -96,15 +100,26 @@ const firstClassSteps = [
 ];
 
 const breadcrumb = [
-  { name: 'Home', url: 'https://gbwhittier.com/' },
-  { name: 'Adults Jiu-Jitsu', url: 'https://gbwhittier.com/adults-jiu-jitsu/' },
+  { name: 'Home', url: 'https://www.graciebarrawhittier.com/' },
+  { name: 'Adults Jiu-Jitsu', url: 'https://www.graciebarrawhittier.com/adults-jiu-jitsu/' },
 ];
+
+const adultsPageUrl = 'https://www.graciebarrawhittier.com/adults-jiu-jitsu/';
+
+const courseItems = programs.map((p) => ({
+  name: p.name,
+  description: p.description,
+  audience: 'Adults 16+',
+  url: adultsPageUrl,
+}));
 ---
 
 <BaseLayout
   title="Adult BJJ Classes in Whittier, CA | Gracie Barra Whittier"
   description="Train Brazilian Jiu-Jitsu at Gracie Barra Whittier. Beginner-friendly adult BJJ classes in Whittier, CA. Build fitness, self-defense skills, and confidence. Try 3 classes free."
-  canonical="https://gbwhittier.com/adults-jiu-jitsu/"
+  canonical="https://www.graciebarrawhittier.com/adults-jiu-jitsu/"
+  ogImage="/og/adults-jiu-jitsu.jpg"
+  ogImageAlt="Coach demonstrating a Jiu-Jitsu technique to adult students seated on the mat at Gracie Barra Whittier"
 >
   <div class="bg-gb-bg-light">
     {/* HERO — rounded card on light-gray background */}
@@ -306,4 +321,7 @@ const breadcrumb = [
 
   <SchemaFAQ items={adultsFaqs} />
   <SchemaBreadcrumb items={breadcrumb} />
+  <SchemaCourse items={courseItems} pageUrl={adultsPageUrl} />
+  <SchemaPerson items={instructors} />
+  <AIChatWidget />
 </BaseLayout>
